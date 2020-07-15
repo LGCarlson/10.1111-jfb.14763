@@ -28,7 +28,7 @@ LGCtheme <- theme_light() + theme(panel.background = element_blank(),
 
 
 ```{r, echo=FALSE}
-formationdf<-read_csv(here::here("annulus_data", "formation_df.csv"))
+Carlin_data<-read_csv(here::here("annulus_data", "formation_df.csv"))
 ```
 
 #### Formation data metadata
@@ -72,31 +72,31 @@ Clean data to remove "impossible" events
 
 ```{r, echo=F, message = F, warning = F}
 # a fish cannot be at sea for more than 730 days and only have formed one annulus - recapture or release data must be incorrect
-mistakeA <- formationdf %>% 
+mistakeA <- Carlin_data %>% 
   filter(SeaAge == 1 & DaysatSea > 730) %>% 
   mutate(mistake = "at sea more than 730 days with only 1 annulus") 
 
 # a fish cannot be at sea for less than 730 days and have already formed two annuli 
-mistakeB <- formationdf %>% 
+mistakeB <- Carlin_data %>% 
   filter(SeaAge == 2 & DaysatSea < 730) %>% 
   mutate(mistake = "at sea less than 730 days and already has 2 annuli") 
 
 # a fish cannot be at sea for more than 350 days and not yet formed an annulus
-mistakeC<- formationdf %>% 
+mistakeC<- Carlin_data %>% 
   filter(SeaAge == 0 & DaysatSea > 300) %>% 
   mutate(mistake = "at sea more than 350 days with no annulus") 
 
 # dataframe of "incorrect" or "impossible" data
 mistakeFA<-bind_rows(mistakeA, mistakeB, mistakeC)
 
-spawning1SW<-formationdf %>% 
+spawning1SW<-Carlin_data %>% 
   filter(numannuli == 1 & Type == "river") 
 
-sea2SW<-formationdf %>% 
+sea2SW<-Carlin_data %>% 
   filter(numannuli == 2 & Type == "distant") 
 
 # overwrite formation data after removing mistake data and getting rid of fish caught as postsmolts
-formationdf<-formationdf %>% 
+formationdf<-Carlin_data %>% 
   anti_join(mistakeFA, by = "JoinID") %>% 
   anti_join(spawning1SW, by = "JoinID") %>% 
   anti_join(sea2SW, by = "JoinID") %>% 
@@ -142,7 +142,9 @@ formationdf %>%
 ```
 
 
-### Calculate annulus formation date using individual average deposition rate
+Calculate annulus formation date using individual average deposition rate
+
+New columns added:
 
 * last.annulus - M1 if at sea recapture or M2 if homewater recapture
 
@@ -196,6 +198,205 @@ anndate %>%
 ```
 
 
+
+## Seasonally variable scenario
+
+
+Calculate intercirculus spacings from full scale (circulus measurement) data.
+
+```{r, warning=F, message=F}
+full_circ<-read_csv(here::here("annulus_data","Carlin_full_circuli_dataset.csv")) %>% 
+  distinct(JoinID, .keep_all = T) %>% 
+  dplyr::select(-X1) %>% 
+  semi_join(formationdf, by = "JoinID")
+
+
+
+spacinglist<-list()
+IDvec<-as.vector(unique(full_circ$JoinID))
+
+#calculate the differenced spacings
+for(i in IDvec){
+  
+  temp_df<-full_circ %>% 
+    distinct(JoinID, .keep_all = T) %>% 
+    filter(JoinID == i)
+
+# create a vector of circulus spacings
+  vect<-as.numeric(temp_df[,2:127])
+  vect<-vect[!is.na(vect)]
+
+# create a vector of differenced spacings
+  spacingraw<-diff(vect)
+  
+spacingdf<-tibble(JoinID = i, spacing = spacingraw) %>% 
+    tibble::rowid_to_column("circ_num") %>% 
+    dplyr::select(JoinID, circ_num, spacing)
+  
+spacinglist[[i]]<-spacingdf
+}
+
+spacing_df<-do.call(rbind,spacinglist) %>% 
+  as_tibble() 
+```
+
+
+Apply seasonal variability to circulus deposition rate based on intercirculus spacing patterns.
+
+```{r, warning=F, message=F}
+ann<-read_csv(here::here("annulus_data","Carlin_growth_markers.csv")) %>% 
+  distinct(JoinID, .keep_all = T) %>% 
+  dplyr::select(-X1) %>% 
+  semi_join(formationdf, by = "JoinID")
+
+
+after_lastann<-list()
+circrate_list<-list()
+
+IDvec<-as.vector(unique(ann$JoinID))
+
+for(i in IDvec){
+  
+# dataframe that contains only the circulus numbers of the FMC, M1, M2, and total number of circuli
+  temp_annuli<-ann %>% 
+    filter(JoinID == i) 
+
+after_lastann[[i]]<- temp_annuli %>% 
+  mutate(last_ann = ifelse(is.na(M2_c)==FALSE, M2_c, M1_c))  #add column of most recent annulus #
+
+  
+# add originally calculated data
+  temp_rate<-anndate %>% 
+    filter(JoinID == i) 
+  
+# keep only marine circuli
+  temp_df<-spacing_df %>% 
+    filter(JoinID == i) %>% 
+    filter(circ_num >= temp_annuli$FMC_c)
+  
+# calculate deposition rate for each circulus based on spacings
+  temp_df2<-temp_df %>% 
+    mutate(centered = (spacing - mean(spacing))*-1) %>% 
+    mutate(cent_rate = (centered*100)+temp_rate$dayspercirc) 
+
+
+# sum of circ rates should = days at sea  
+temp_rate$DaysatSea
+sum(temp_df2$circ_rate)
+
+circrate_list[[i]]<-temp_df2
+
+}
+
+seas_rate<-do.call(rbind,circrate_list) %>% 
+   as_tibble()
+seas_ann<-do.call(rbind,after_lastann) %>% 
+   as_tibble()
+
+```
+
+
+
+Calculate new annulus formation dates based on these seasonally variable spacings.
+
+```{r}
+formationdates<-list()
+
+for(i in IDvec){
+  
+# dataframe that contains only the circulus numbers of the FMC, M1, M2, total number of circuli, and circulus # of last annulus
+l<-seas_ann %>% 
+  distinct(JoinID, .keep_all = T) %>% 
+  filter(JoinID == i) %>% 
+  mutate(after_ann = total_c - last_ann) %>% 
+  mutate(annulustype = ifelse(is.na(M2_c) == FALSE, "Homewater recaptures", "At sea recaptures"))
+
+# filter out only "post-annulus" circuli
+r<-seas_rate %>% 
+  filter(JoinID == i) %>% 
+  filter(circ_num %in% seq(l$last_ann, l$total_c,1))
+
+
+s<-seas_rate %>% 
+  filter(JoinID == i) %>% 
+  filter(circ_num %in% seq(l$M1_c, l$total_c,1))
+
+# add originally calculated data
+temp_rate<-anndate %>% 
+  distinct(JoinID, .keep_all = T) %>% 
+  filter(JoinID == i)  
+
+
+formationdates[[i]]<-tibble(JoinID= i, annulustype = l$annulustype, 
+                            dayssinceM1 = sum(s$cent_rate), 
+                            dayssinceM2 = sum(r$cent_rate), 
+                            RecaptureDate = temp_rate$RecaptureDate, 
+                            M1date = temp_rate$RecaptureDate - sum(s$cent_rate),
+                            M2date = temp_rate$RecaptureDate - sum(r$cent_rate))
+}
+
+form_dates<-do.call(rbind,formationdates) %>% 
+   as_tibble() %>% 
+  mutate(M1annmonth = lubridate::month(M1date)) %>% 
+  mutate(M2annmonth = lubridate::month(M2date)) %>% 
+  mutate(M1DOY = lubridate::yday(M1date)) %>% 
+  mutate(M2DOY = lubridate::yday(M2date)) %>% 
+  mutate(`First annulus` = ifelse(M1annmonth > 10, M1DOY-365, M1DOY)) %>% 
+  mutate(`Second annulus` = ifelse(M2annmonth > 10, M2DOY-365, M2DOY)) %>% 
+  mutate(`Second annulus` = ifelse(annulustype == "At sea recaptures", NA, M2DOY)) %>% 
+  gather(key = "Annulus", value = "DOY", 12:13) 
+
+
+form_dates %>%
+  group_by(annulustype, Annulus) %>% 
+  summarise(mean = mean(DOY,na.rm=T), sd = sd(DOY,na.rm=T),
+            `5%` = quantile(DOY,probs=c(0.05),na.rm=T), 
+            `95%` = quantile(DOY,probs=c(0.95),na.rm=T)) %>%  
+  dplyr::rename("Recpature Type" = "annulustype") %>% 
+  drop_na()
+
+```
+
+
+
+```{r}
+K_calc<-read_csv(here::here("annulus_data", "K_calc_data.csv"))
+```
+
+
+
+```{r}
+K_calc %>% 
+  group_by(SeaAge) %>% 
+  count()
+```
+
+
+```{r, fig.height=5, fig.width=4, fig.align="center"}
+growth_mod <- glm(K_calc$marine.incr ~ poly(K_calc$DaysatSea,2))
+summary(growth_mod)
+plot(growth_mod)
+
+with(summary(growth_mod), 1 - deviance/null.deviance)
+rcompanion::nagelkerke(growth_mod)
+
+
+pred_vals<-predict.glm(growth_mod,data.frame(x=K_calc$DaysatSea),type="response",se.fit = T)
+critval <- 1.96 ## approx 95% CI
+upr <- pred_vals$fit + (critval * pred_vals$se.fit)
+lwr <- pred_vals$fit - (critval * pred_vals$se.fit)
+
+pred<-tibble(DaysatSea = K_calc$DaysatSea, fit = pred_vals$fit, upr = upr, lwr = lwr)
+
+ggplot(K_calc, aes(DaysatSea, marine.incr)) +
+  geom_point(size=1.6, color = "#C7C9CB") + 
+  geom_line(data=pred, aes(x=DaysatSea, y=fit),size=0.7) + 
+  geom_line(data=pred, aes(x=DaysatSea, y=upr),size=0.6, lty=2) + 
+  geom_line(data=pred, aes(x=DaysatSea, y=lwr),size=0.6, lty=2) + LGCtheme +
+  labs(x= "Days at Sea", y = "Marine growth increment", fill = "") +
+  scale_x_continuous(breaks = c(0,250,500,750))
+
+```
 
 
 
