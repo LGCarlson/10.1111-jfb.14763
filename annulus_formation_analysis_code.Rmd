@@ -1,0 +1,56 @@
+---
+title: "Untitled"
+author: "LGCarlson"
+date: "7/15/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(here)
+```
+
+
+```{r}
+formation_df<-read_csv(here::here("annulus_data", "formation_df.csv"))
+```
+
+#### Formation data metadata
+
+* JoinID - ID composed of smolt year (release year) and Carlin tag number
+
+* Batch_TagID - ID composed of batch number and Carlin tag number
+
+* marine.circ - number of marine circuli total
+
+* FMC - distance between scale focus and first marine circulus (mm)
+
+* Radius - distance between scale focus and radius (scale edge) (mm)
+
+* SeaAge - age at time of recapture based on number of marine annuli
+
+* M1.incr - distance between first marine circulus and first marine annulus (mm)
+
+* M2.incr - distance between first marine annulus and second marine annulus (mm)
+
+* M1.circ - number of circuli between first marine circulus and first marine annulus
+
+* M2.circ - number of circuli between first marine annulus and second marine annulus
+
+* DaysatSea - number of days between release date and recapture date
+
+* ReleaseDate - date that tagged smolt was released into the river (yyyy-mm-dd)
+
+* RecaptureDate- date that tagged smolt was recaptured (yyyy-mm-dd)
+
+* annulustype and numannuli - descriptive columns that essentially repeat SeaAge
+
+* Type - river (homewater) or distant (at sea) recapture
+
+
+```{r}
+
+```
+
