@@ -1,5 +1,5 @@
 ---
-title: "Untitled"
+title: "Annulus Formation Full Analysis Code"
 author: "LGCarlson"
 date: "7/15/2020"
 output: html_document
@@ -12,9 +12,23 @@ library(tidyverse)
 library(here)
 ```
 
-
 ```{r}
-formation_df<-read_csv(here::here("annulus_data", "formation_df.csv"))
+theme_set(theme_light())
+
+#set personalized plotting theme
+LGCtheme <- theme_light() + theme(panel.background = element_blank(), 
+                panel.grid = element_blank(), 
+                axis.text = element_text(size = 13), 
+                axis.title = element_text(size = 14), 
+                legend.text = element_text(size = 13), 
+                legend.title = element_text(size = 14), 
+                strip.background = element_blank(), 
+                strip.text = element_text(size = 13, color = "black"))
+```
+
+
+```{r, echo=FALSE}
+formationdf<-read_csv(here::here("annulus_data", "formation_df.csv"))
 ```
 
 #### Formation data metadata
@@ -45,12 +59,145 @@ formation_df<-read_csv(here::here("annulus_data", "formation_df.csv"))
 
 * RecaptureDate- date that tagged smolt was recaptured (yyyy-mm-dd)
 
-* annulustype and numannuli - descriptive columns that essentially repeat SeaAge
+* annulustype - modified later to represent labels used in manuscript (homewater and at sea rather than sea age)
 
-* Type - river (homewater) or distant (at sea) recapture
+* numannuli - descriptive columns that essentially repeat SeaAge
+
+* Type - river or distant recapture
+
+
+
+
+Clean data to remove "impossible" events
+
+```{r, echo=F, message = F, warning = F}
+# a fish cannot be at sea for more than 730 days and only have formed one annulus - recapture or release data must be incorrect
+mistakeA <- formationdf %>% 
+  filter(SeaAge == 1 & DaysatSea > 730) %>% 
+  mutate(mistake = "at sea more than 730 days with only 1 annulus") 
+
+# a fish cannot be at sea for less than 730 days and have already formed two annuli 
+mistakeB <- formationdf %>% 
+  filter(SeaAge == 2 & DaysatSea < 730) %>% 
+  mutate(mistake = "at sea less than 730 days and already has 2 annuli") 
+
+# a fish cannot be at sea for more than 350 days and not yet formed an annulus
+mistakeC<- formationdf %>% 
+  filter(SeaAge == 0 & DaysatSea > 300) %>% 
+  mutate(mistake = "at sea more than 350 days with no annulus") 
+
+# dataframe of "incorrect" or "impossible" data
+mistakeFA<-bind_rows(mistakeA, mistakeB, mistakeC)
+
+spawning1SW<-formationdf %>% 
+  filter(numannuli == 1 & Type == "river") 
+
+sea2SW<-formationdf %>% 
+  filter(numannuli == 2 & Type == "distant") 
+
+# overwrite formation data after removing mistake data and getting rid of fish caught as postsmolts
+formationdf<-formationdf %>% 
+  anti_join(mistakeFA, by = "JoinID") %>% 
+  anti_join(spawning1SW, by = "JoinID") %>% 
+  anti_join(sea2SW, by = "JoinID") %>% 
+  filter(SeaAge > 0) %>% 
+  mutate(annulustype = ifelse(Type == "river", "Homewater recaptures", "At sea recaptures"))
+```
 
 
 ```{r}
-
+table(formationdf$numannuli)
+table(formationdf$annulustype)
+length(unique(formationdf$JoinID))
 ```
+
+
+The average deposition rate is 11.4, but deposition rate varies by number of marine annuli
+
+```{r, echo=F, message = F, warning = F}
+dayspercirc<-formationdf %>% 
+  mutate(dayspercirc = DaysatSea/marine.circ) %>% 
+  group_by(annulustype) %>% 
+  dplyr::summarise(meancirday = mean(dayspercirc), sd = sd(dayspercirc), n = n(), 
+                   `5%` = quantile(dayspercirc,probs=c(0.05)), `95%` = quantile(dayspercirc,probs=c(0.95)),
+                   meandaysatsea = mean(DaysatSea), sddays = sd(DaysatSea)) 
+
+dayspercirc
+```
+
+```{r, echo=F, message = F, warning = F, fig.height=2.75, fig.width=5, fig.align="center"}
+formationdf %>% 
+  mutate(dayspercirc = DaysatSea/marine.circ) %>% 
+  left_join(dayspercirc, by = "annulustype") %>% 
+  ggplot(aes(x=dayspercirc, fill=annulustype)) + 
+  geom_histogram(color = "black", bins=30) + facet_wrap(~annulustype) +
+  scale_fill_manual(values = c("#bdbdbd","#717171")) +
+  geom_vline(aes(xintercept = meancirday), lty = 2, size = 0.7, color = "#2c2c2c") + 
+  labs(x = "Deposition rate (days per circulus)", y = "n") +
+  theme(panel.grid = element_blank()) + 
+  theme(axis.text = element_text(size = 12), axis.title = element_text(size = 13)) +
+  scale_x_continuous(breaks = c(6,9,12,15,18)) + LGCtheme +
+  theme(legend.position = "none") 
+  
+```
+
+
+### Calculate annulus formation date using individual average deposition rate
+
+* last.annulus - M1 if at sea recapture or M2 if homewater recapture
+
+* last.annulus.which - either "First marine annulus" or "Second marine annulus"
+
+* after.growth - number of circuli after the last.annulus
+
+* afterm1 - number of circuli after the first marine annulus
+
+```{r, echo=F, message = F, warning = F}
+aftergrowth_df<-formationdf %>% 
+  mutate(last.annulus = ifelse(is.na(M2.incr) == FALSE, M2.circ,M1.circ)) %>% 
+  mutate(last.annulus.which = ifelse(is.na(M2.incr) == FALSE, "Second marine annulus", "First marine annulus")) %>% 
+  mutate(after.growth = marine.circ - last.annulus) %>% 
+  mutate(afterm1 = marine.circ - M1.circ)
+```
+
+
+```{r}
+anlabs<-as_labeller(c("M1DOY"="First marine annulus", "M2DOY"="Second marine annulus"))
+```
+
+
+
+## Individual constant scenario
+
+
+
+```{r, echo = F, warning = F, fig.width=7.5, fig.height=3.75, fig.align="center"}
+anndate<-aftergrowth_df %>% 
+  mutate(dayspercirc = DaysatSea/marine.circ) %>% 
+  mutate(dayssinceM1 = afterm1 * dayspercirc) %>% 
+  mutate(dayssinceM2 = ifelse(last.annulus.which == "Second marine annulus", after.growth * dayspercirc, NA)) %>% 
+  mutate(M1date = RecaptureDate - dayssinceM1) %>% 
+  mutate(M2date = RecaptureDate - dayssinceM2) %>% 
+  mutate(M1annmonth = lubridate::month(M1date)) %>% 
+  mutate(M2annmonth = lubridate::month(M2date)) %>% 
+  mutate(M1DOY = lubridate::yday(M1date)) %>% 
+  mutate(M2DOY = lubridate::yday(M2date)) %>% 
+  mutate(`First annulus` = ifelse(M1annmonth > 10, M1DOY-365, M1DOY)) %>% 
+  mutate(`Second annulus` = ifelse(M2annmonth > 10, M2DOY-365, M2DOY)) %>% 
+  gather(key = "Annulus", value = "DOY", 31:32) 
+
+anndate %>%
+  dplyr::group_by(annulustype, Annulus) %>% 
+  summarise(mean = mean(DOY,na.rm=T), sd = sd(DOY,na.rm=T),
+            `5%` = quantile(DOY,probs=c(0.05),na.rm=T), 
+            `95%` = quantile(DOY,probs=c(0.95),na.rm=T)) %>% 
+  dplyr::rename("Recpature Type" = "annulustype") %>% 
+  drop_na()
+```
+
+
+
+
+
+
 
