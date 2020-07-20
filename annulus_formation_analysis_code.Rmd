@@ -119,7 +119,7 @@ dayspercirc<-formationdf %>%
   mutate(dayspercirc = DaysatSea/marine.circ) %>% 
   group_by(annulustype) %>% 
   dplyr::summarise(meancirday = mean(dayspercirc), sd = sd(dayspercirc), n = n(), 
-                   `5%` = quantile(dayspercirc,probs=c(0.05)), `95%` = quantile(dayspercirc,probs=c(0.95)),
+                   `5%` = quantile(dayspercirc,probs=c(0.05)), `95%` = quantile(dayspercirc,probs=c(0.95)),`97%` = quantile(dayspercirc,probs=c(0.97)),
                    meandaysatsea = mean(DaysatSea), sddays = sd(DaysatSea)) 
 
 dayspercirc
@@ -137,8 +137,11 @@ formationdf %>%
   theme(panel.grid = element_blank()) + 
   theme(axis.text = element_text(size = 12), axis.title = element_text(size = 13)) +
   scale_x_continuous(breaks = c(6,9,12,15,18)) + LGCtheme +
-  theme(legend.position = "none") 
-  
+  theme(legend.position = "none") +
+  theme(panel.border = element_blank(), axis.line = element_line(color = "lightgrey"))
+
+
+#ggsave(filename = "rate_hist.pdf", plot = last_plot(), height = 3, width = 5.25)  
 ```
 
 
@@ -195,6 +198,11 @@ anndate %>%
             `95%` = quantile(DOY,probs=c(0.95),na.rm=T)) %>% 
   dplyr::rename("Recpature Type" = "annulustype") %>% 
   drop_na()
+
+indcont_scenario<-anndate %>% 
+  dplyr::select(JoinID, annulustype, Annulus, DOY) %>% 
+  dplyr::rename("Individual constant" = "DOY")
+
 ```
 
 
@@ -355,17 +363,26 @@ form_dates %>%
   dplyr::rename("Recpature Type" = "annulustype") %>% 
   drop_na()
 
+
+
+
+seasvar_scenario<-form_dates %>% 
+  dplyr::select(JoinID, annulustype, Annulus, DOY) %>% 
+  dplyr::rename("Seasonally variable" = "DOY")
+
 ```
 
 
+## Lifetime and seasonally variable scenario
 
 ```{r}
 K_calc<-read_csv(here::here("annulus_data", "K_calc_data.csv"))
-```
 
+meanDAS<-K_calc %>% 
+  group_by(SeaAge) %>% 
+  summarise(meanDAS=mean(DaysatSea, na.rm = T)) %>% 
+  mutate(meanDAS = round(meanDAS,0))
 
-
-```{r}
 K_calc %>% 
   group_by(SeaAge) %>% 
   count()
@@ -373,20 +390,23 @@ K_calc %>%
 
 
 ```{r, fig.height=5, fig.width=4, fig.align="center"}
+
 growth_mod <- glm(K_calc$marine.incr ~ poly(K_calc$DaysatSea,2))
 summary(growth_mod)
-plot(growth_mod)
-
-with(summary(growth_mod), 1 - deviance/null.deviance)
-rcompanion::nagelkerke(growth_mod)
-
 
 pred_vals<-predict.glm(growth_mod,data.frame(x=K_calc$DaysatSea),type="response",se.fit = T)
 critval <- 1.96 ## approx 95% CI
 upr <- pred_vals$fit + (critval * pred_vals$se.fit)
 lwr <- pred_vals$fit - (critval * pred_vals$se.fit)
 
-pred<-tibble(DaysatSea = K_calc$DaysatSea, fit = pred_vals$fit, upr = upr, lwr = lwr)
+pred<-tibble(DaysatSea = K_calc$DaysatSea, fit = pred_vals$fit, upr = upr, lwr = lwr) %>% 
+  distinct(DaysatSea, .keep_all = T) %>% 
+  arrange(DaysatSea)
+
+adj2SW<-unique(pred$fit[pred$DaysatSea == meanDAS$meanDAS[3]])/unique(pred$fit[pred$DaysatSea == meanDAS$meanDAS[2]])
+adj1SW<-adj2SW*0.9
+inv1SW<-2-adj1SW
+
 
 ggplot(K_calc, aes(DaysatSea, marine.incr)) +
   geom_point(size=1.6, color = "#C7C9CB") + 
@@ -394,11 +414,264 @@ ggplot(K_calc, aes(DaysatSea, marine.incr)) +
   geom_line(data=pred, aes(x=DaysatSea, y=upr),size=0.6, lty=2) + 
   geom_line(data=pred, aes(x=DaysatSea, y=lwr),size=0.6, lty=2) + LGCtheme +
   labs(x= "Days at Sea", y = "Marine growth increment", fill = "") +
-  scale_x_continuous(breaks = c(0,250,500,750))
+  scale_x_continuous(breaks = c(0,250,500,750))+
+  theme(panel.border = element_blank(), axis.line = element_line(color = "lightgrey"))
+
+
+#ggsave(filename = "asympt_growth.pdf", plot = last_plot(), height = 5, width = 4)  
+```
+
+
+
+```{r}
+after_lastann<-list()
+circrate_list<-list()
+
+IDvec<-as.vector(unique(ann$JoinID))
+
+for(i in IDvec){
+  
+# dataframe that contains only the circulus numbers of the FMC, M1, M2, and total number of circuli
+  temp_annuli<-ann %>% 
+    filter(JoinID == i) 
+
+after_lastann[[i]]<- temp_annuli %>% 
+  mutate(last_ann = ifelse(is.na(M2_c)==FALSE, M2_c, M1_c))   #add column of most recent annulus #
+
+  
+# add originally calculated data to get average dep rate
+  temp_rate<-anndate %>% 
+    filter(JoinID == i) 
+
+# age adjusted rate happens here
+  temp_df<-spacing_df %>% 
+    filter(JoinID == i) %>% 
+    mutate(SeaAge = unique(temp_rate$SeaAge)) %>% 
+    filter(circ_num >= temp_annuli$FMC_c)    # keep only marine circuli
+
+  
+if(is.na(temp_annuli$M2_c) == F){
+  temp_df1<-temp_df %>% 
+    mutate(which_circ = ifelse(circ_num >= temp_annuli$M2_c, "after M2", NA)) %>% 
+    mutate(which_circ = ifelse(circ_num < temp_annuli$M2_c, "M1-M2", which_circ)) %>% 
+    mutate(which_circ = ifelse(circ_num <= temp_annuli$M1_c, "before M1", which_circ)) %>% 
+    mutate(which_rate = ifelse(circ_num >= temp_annuli$M2_c, (adj2SW*temp_rate$dayspercirc), NA)) %>% 
+    mutate(which_rate = ifelse(circ_num <= temp_annuli$M1_c, ((inv1SW*temp_rate$dayspercirc)), which_rate)) 
+
+  temp_df2<- temp_df1 %>% 
+    mutate(daysused = (unique(temp_rate$DaysatSea)-sum(temp_df1$which_rate, 
+                                               na.rm = T))/sum(temp_df1$which_circ == "M1-M2")) %>% 
+    mutate(which_rate = ifelse(which_circ == "M1-M2", daysused, which_rate)) %>% 
+    dplyr::select(-daysused)
+
+}
+  
+  else{
+  temp_df1<-temp_df %>% 
+    mutate(which_circ = ifelse(circ_num <= temp_annuli$M1_c, "before M1", "after M1")) %>% 
+    mutate(which_rate = ifelse(circ_num <= temp_annuli$M1_c, NA,
+                               (adj1SW*temp_rate$dayspercirc))) 
+
+  temp_df2<- temp_df1 %>%  
+    mutate(daysused = (unique(temp_rate$DaysatSea)-sum(temp_df1$which_rate, 
+                        na.rm = T))/(unique(temp_rate$marine.circ)-sum(temp_df1$which_circ == "after M1"))) %>% 
+    mutate(which_rate = ifelse(which_circ == "before M1", daysused, which_rate)) %>% 
+    dplyr::select(-daysused)
+}
+
+# calculate deposition rate for each circulus based on spacings
+  temp_df3<-temp_df2 %>% 
+    mutate(centered = (spacing - mean(spacing))*-1) %>% 
+    mutate(cent_rate = (centered*100)+which_rate)
+
+
+# sum of circ rates should = days at sea, some rounding error with rate at age adjustment
+temp_rate$DaysatSea
+sum(temp_df3$cent_rate)
+
+circrate_list[[i]]<-temp_df3 %>% 
+  mutate(diff=(unique(temp_rate$DaysatSea))-sum(temp_df3$cent_rate)) %>% 
+  mutate(diff = round(diff,0))
+
+}
+
+life_rate<-do.call(rbind,circrate_list) %>% 
+   as_tibble()
+life_ann<-do.call(rbind,after_lastann) %>% 
+   as_tibble()
 
 ```
 
 
 
+
+```{r}
+formationdates<-list()
+
+for(i in IDvec){
+  
+# dataframe that contains only the circulus numbers of the FMC, M1, M2, total number of circuli, and circulus # of last annulus
+l<-life_ann %>% 
+  distinct(JoinID, .keep_all = T) %>% 
+  filter(JoinID == i) %>% 
+  mutate(after_ann = total_c - last_ann) %>% 
+  mutate(annulustype = ifelse(is.na(M2_c) == FALSE, "Homewater recaptures", "At sea recaptures")) %>% 
+  mutate(firstann = ifelse(is.na(M2_c) == FALSE, M2_c-M1_c, NA))
+
+# filter out only "post-annulus" circuli
+r<-life_rate %>% 
+  filter(JoinID == i) %>% 
+  filter(circ_num %in% seq(l$last_ann, l$total_c,1))
+
+
+s<-life_rate %>% 
+  filter(JoinID == i) %>% 
+  filter(circ_num %in% seq(l$M1_c, l$total_c,1))
+
+# add originally calculated data
+temp_rate<-anndate %>% 
+  distinct(JoinID, .keep_all = T) %>% 
+  filter(JoinID == i)  
+
+formationdates[[i]]<-tibble(JoinID= i, annulustype = l$annulustype, 
+                            dayssinceM1 = sum(s$cent_rate), 
+                            dayssinceM2 = sum(r$cent_rate), 
+                            RecaptureDate = temp_rate$RecaptureDate, 
+                            M1date = temp_rate$RecaptureDate - sum(s$cent_rate),
+                            M2date = temp_rate$RecaptureDate - sum(r$cent_rate))
+}
+
+form_dates<-do.call(rbind,formationdates) %>% 
+   as_tibble() %>% 
+  mutate(M1annmonth = lubridate::month(M1date)) %>% 
+  mutate(M2annmonth = lubridate::month(M2date)) %>% 
+  mutate(M1DOY = lubridate::yday(M1date)) %>% 
+  mutate(M2DOY = lubridate::yday(M2date)) %>% 
+  mutate(`First annulus` = ifelse(M1annmonth > 10, M1DOY-365, M1DOY)) %>% 
+  mutate(`Second annulus` = ifelse(M2annmonth > 10, M2DOY-365, M2DOY)) %>% 
+  mutate(`Second annulus` = ifelse(annulustype == "At sea recaptures", NA, M2DOY)) %>% 
+  gather(key = "Annulus", value = "DOY", 12:13) 
+
+
+form_dates %>%
+  group_by(annulustype, Annulus) %>% 
+  summarise(mean = mean(DOY,na.rm=T), sd = sd(DOY,na.rm=T),
+            `5%` = quantile(DOY,probs=c(0.05),na.rm=T), 
+            `95%` = quantile(DOY,probs=c(0.95),na.rm=T)) %>%  
+  dplyr::rename("Recpature Type" = "annulustype") %>% 
+  drop_na()
+
+
+
+seaslife_scenario<-form_dates %>% 
+  dplyr::select(JoinID, annulustype, Annulus, DOY) %>% 
+  dplyr::rename("Seasonal and lifetime variable" = "DOY")
+
+```
+
+
+
+
+
+## Winter constant scenario (14 days/circulus)
+
+```{r, echo = F, warning = F, fig.width=7.5, fig.height=3.75, fig.align="center"}
+anndate_14<-aftergrowth_df %>% 
+  mutate(dayspercirc = 14) %>% 
+  mutate(dayssinceannulus = after.growth * dayspercirc) %>% 
+  mutate(annulusdate = RecaptureDate - dayssinceannulus) %>% 
+  mutate(M1annmonth = ifelse(annulustype == "At sea recaptures", lubridate::month(annulusdate), NA)) %>% 
+  mutate(M2annmonth = ifelse(annulustype == "Homewater recaptures", lubridate::month(annulusdate), NA)) %>% 
+  mutate(M1DOY = ifelse(annulustype == "At sea recaptures",lubridate::yday(annulusdate),NA)) %>% 
+  mutate(M2DOY = ifelse(annulustype == "Homewater recaptures",lubridate::yday(annulusdate), NA)) %>% 
+  mutate(`First annulus` = ifelse(M1annmonth > 10, M1DOY-365, M1DOY)) %>% 
+  mutate(`Second annulus` = ifelse(M2annmonth > 10, M2DOY-365, M2DOY)) %>% 
+  gather(key = "Annulus", value = "DOY", 29:30) 
+
+anndate_14 %>%
+  group_by(annulustype, Annulus) %>% 
+  summarise(mean = mean(DOY,na.rm=T), sd = sd(DOY,na.rm=T),
+            `5%` = quantile(DOY,probs=c(0.05),na.rm=T), 
+            `95%` = quantile(DOY,probs=c(0.95),na.rm=T)) %>%  
+  dplyr::rename("Recpature Type" = "annulustype") %>% 
+  drop_na()
+
+wintercont_scenario<-anndate_14 %>% 
+  dplyr::select(JoinID, annulustype, Annulus, DOY) %>% 
+  dplyr::rename("Constant (14 days/circ)" = "DOY") %>% 
+  drop_na()
+```
+
+
+
+## Summer constant scenario (7 days/circulus)
+
+```{r, echo = F, warning = F}
+anndate_7<-aftergrowth_df %>% 
+  mutate(dayspercirc = 7) %>% 
+  mutate(dayssinceannulus = after.growth * dayspercirc) %>% 
+  mutate(annulusdate = RecaptureDate - dayssinceannulus) %>% 
+  mutate(M1annmonth = ifelse(annulustype == "At sea recaptures", lubridate::month(annulusdate), NA)) %>% 
+  mutate(M2annmonth = ifelse(annulustype == "Homewater recaptures", lubridate::month(annulusdate), NA)) %>% 
+  mutate(M1DOY = ifelse(annulustype == "At sea recaptures",lubridate::yday(annulusdate),NA)) %>% 
+  mutate(M2DOY = ifelse(annulustype == "Homewater recaptures",lubridate::yday(annulusdate), NA)) %>% 
+  mutate(`First annulus` = ifelse(M1annmonth > 10, M1DOY-365, M1DOY)) %>% 
+  mutate(`Second annulus` = ifelse(M2annmonth > 10, M2DOY-365, M2DOY)) %>% 
+  gather(key = "Annulus", value = "DOY", 29:30) 
+
+anndate_7 %>%
+  group_by(annulustype, Annulus) %>% 
+  summarise(mean = mean(DOY,na.rm=T), sd = sd(DOY,na.rm=T),
+            `5%` = quantile(DOY,probs=c(0.05),na.rm=T), 
+            `95%` = quantile(DOY,probs=c(0.95),na.rm=T)) %>%  
+  dplyr::rename("Recpature Type" = "annulustype") %>% 
+  drop_na()
+
+
+summercont_scenario<-anndate_7 %>% 
+  dplyr::select(JoinID, annulustype, Annulus, DOY) %>% 
+  dplyr::rename("Constant (7 days/circ)" = "DOY") %>% 
+  drop_na()
+```
+
+
+
+```{r,fig.height=3, fig.width=14}
+full_formation_data<-indcont_scenario %>%  
+  left_join(seasvar_scenario, by=c("JoinID", "Annulus", "annulustype")) %>% 
+  left_join(seaslife_scenario, by=c("JoinID", "Annulus", "annulustype")) %>% 
+  left_join(wintercont_scenario, by=c("JoinID", "Annulus", "annulustype")) %>% 
+  left_join(summercont_scenario, by=c("JoinID", "Annulus", "annulustype")) %>% 
+  mutate(whichann = paste(annulustype, Annulus, sep = " - ")) %>% 
+  gather(key="scenario", value="DOY", 4:8) 
+
+
+
+mylabels<-c("Homewater recaptures \n Second marine annulus","Homewater recaptures \n First marine annulus","At sea recaptures \n First marine annulus")
+
+full_formation_data %>% 
+  drop_na() %>% 
+  mutate(whichann = fct_relevel(whichann, c("Homewater recaptures - Second annulus","Homewater recaptures - First annulus",
+                                      "At sea recaptures - First annulus"))) %>%
+  mutate(scenario = fct_relevel(scenario, c("Individual constant", "Seasonally variable", "Seasonal and lifetime variable", 
+                                            "Constant (14 days/circ)", "Constant (7 days/circ)"))) %>% 
+  ggplot(aes(y=whichann, x=DOY, fill=as.factor(annulustype))) + 
+  ggridges::stat_density_ridges(quantile_lines = TRUE, quantiles = c(0.05, 0.5, 0.95), 
+                                scale=0.81, alpha = 0.8, rel_min_height = 0.01) +
+  geom_vline(xintercept = -12, lty=2, color="#2c2c2c") +
+  annotate("text",x=-31, y="Homewater recaptures - First annulus", label = "Winter solstice", angle=90, color = "#2c2c2c") +
+  facet_wrap(~scenario, ncol=5) +
+  scale_fill_manual(values = c("#bdbdbd","#717171")) +
+  scale_x_continuous(limits = c(-80, 280), breaks = c(-30,60, 152,244), 
+                     labels = c("Dec 1","Mar 1","Jun 1","Sep 1")) + 
+  scale_y_discrete(labels = mylabels) + LGCtheme +
+  labs(x = "Predicted date of annulus completion", y = "") +
+  theme(legend.position = "none")   + 
+  theme(panel.border = element_blank(), axis.line = element_line(color = "lightgrey"))
+
+
+
+###ggsave(filename = "completion_ridges.pdf", plot = last_plot(), height = 4, width = 18)
+```
 
 
