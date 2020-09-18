@@ -10,6 +10,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 library(tidyverse)
 library(here)
+library(lubridate)
 ```
 
 ```{r}
@@ -29,6 +30,10 @@ LGCtheme <- theme_light() + theme(panel.background = element_blank(),
 
 ```{r, echo=FALSE}
 Carlin_data<-read_csv(here::here("annulus_data", "formation_df.csv"))
+
+Carlin_data %>% 
+  filter(Type == "river") %>% 
+  filter(numannuli == 2)
 ```
 
 #### Formation data metadata
@@ -373,6 +378,7 @@ seasvar_scenario<-form_dates %>%
 ```
 
 
+
 ## Lifetime and seasonally variable scenario
 
 ```{r}
@@ -673,5 +679,105 @@ full_formation_data %>%
 
 ###ggsave(filename = "completion_ridges.pdf", plot = last_plot(), height = 4, width = 18)
 ```
+
+
+
+
+
+```{r}
+sst<-read_csv(here::here("annulus_data", "migration_areas_ERSST.csv"))
+
+monthtib <- tribble(
+  ~ MonthName, ~ Month, 
+  "Jan", 1,
+  "Feb", 2,
+  "Mar", 3,
+  "Apr", 4,
+  "May", 5,
+  "Jun", 6,
+  "Jul", 7,
+  "Aug", 8,
+  "Sep", 9,
+  "Oct", 10,
+  "Nov", 11,
+  "Dec", 12) 
+```
+
+
+```{r, echo=FALSE}
+sst_data<-sst %>% 
+  filter(Dates >= "1961-01-01", 
+         Dates < "1991-01-01") %>% 
+  mutate(Year = lubridate::year(Dates)) %>% 
+  mutate(Month = lubridate::month(Dates)) %>% 
+  mutate(ERSST = ifelse(ERSST < 0, 0, ERSST)) %>% 
+  left_join(monthtib, by = "Month") %>% 
+  dplyr::select(Area, Dates, Year, Month, MonthName, ERSST)
+
+mean_sst<-sst_data %>% 
+  filter(Area=="s.labsea") %>% 
+  group_by(Month) %>% 
+  summarise(meanSST=mean(ERSST), sd=sd(ERSST)) 
+
+ATU_data<-mean_sst %>% 
+  mutate(days_in_mo=lubridate::days_in_month(Month)) %>% 
+  mutate(days_in_mo = ifelse(Month == 12, 10, days_in_mo)) %>% 
+  mutate(minATU = ifelse(Month == 2, 14, days_in_mo)) %>% 
+  mutate(maxATU = ifelse(Month == 3, 17, days_in_mo)) %>% 
+  filter(Month %in% c(11,12,1,2,3,4,5,6,7)) 
+```
+
+
+
+
+
+```{r, fig.height=3, fig.width=14}
+full_formation_data %>% 
+  drop_na() %>% 
+  mutate(whichann = fct_relevel(whichann, c("Homewater recaptures - Second annulus","Homewater recaptures - First annulus",
+                                      "At sea recaptures - First annulus"))) %>%
+  mutate(scenario = fct_relevel(scenario, c("Individual constant", "Seasonally variable", "Seasonal and lifetime variable", 
+                                            "Constant (14 days/circ)", "Constant (7 days/circ)"))) %>% 
+  mutate(dayssincesolstice = abs(DOY + 10)) %>% 
+  mutate(decdays = ifelse(dayssincesolstice > 10, 10, dayssincesolstice)) %>% 
+  mutate(jandays = ifelse(dayssincesolstice > 41, 31, dayssincesolstice-10)) %>% 
+  mutate(febdays = ifelse(dayssincesolstice > 69, 28, dayssincesolstice-41)) %>% 
+  mutate(mardays = ifelse(dayssincesolstice > 100, 31, dayssincesolstice-69)) %>% 
+  mutate(aprdays = ifelse(dayssincesolstice > 130, 30, dayssincesolstice-100)) %>% 
+  mutate(maydays = ifelse(dayssincesolstice > 161, 31, dayssincesolstice-130)) %>% 
+  mutate(jundays = ifelse(dayssincesolstice > 191, 30, dayssincesolstice-161)) %>% 
+  mutate(juldays = ifelse(dayssincesolstice > 222, 31, dayssincesolstice-191)) %>% 
+  mutate(augdays = ifelse(dayssincesolstice > 253, 30, dayssincesolstice-222)) %>% 
+  mutate(decdays = ifelse(decdays>0, decdays*ATU_data$meanSST[ATU_data$Month == 12], 0)) %>% 
+  mutate(jandays = ifelse(jandays>0, jandays*ATU_data$meanSST[ATU_data$Month == 1], 0)) %>% 
+  mutate(febdays = ifelse(febdays>0, febdays*ATU_data$meanSST[ATU_data$Month == 2], 0)) %>% 
+  mutate(mardays = ifelse(mardays>0, mardays*ATU_data$meanSST[ATU_data$Month == 3], 0)) %>% 
+  mutate(aprdays = ifelse(aprdays>0, aprdays*ATU_data$meanSST[ATU_data$Month == 4], 0)) %>% 
+  mutate(maydays = ifelse(maydays>0, maydays*ATU_data$meanSST[ATU_data$Month == 5], 0)) %>% 
+  mutate(jundays = ifelse(jundays>0, jundays*ATU_data$meanSST[ATU_data$Month == 6], 0)) %>% 
+  mutate(juldays = ifelse(juldays>0, juldays*ATU_data$meanSST[ATU_data$Month == 7], 0)) %>% 
+  mutate(augdays = ifelse(augdays>0, augdays*ATU_data$meanSST[ATU_data$Month == 8], 0)) %>% 
+  dplyr::select(scenario, JoinID, whichann, annulustype, DOY, dayssincesolstice, ends_with("days")) %>% 
+  gather(key="month", value = "ATU", 7:15) %>% 
+  group_by(JoinID, scenario, annulustype, whichann) %>% 
+  summarise(sum=sum(ATU, na.rm = T)) %>% 
+  filter(sum>0) %>% 
+  ggplot(aes(x=whichann, y=sum, fill=annulustype)) + geom_boxplot() + coord_flip() + 
+  facet_wrap(~scenario,ncol=5) + LGCtheme + scale_y_continuous(breaks=c(0,500,1000)) +
+    scale_x_discrete(labels = mylabels) + scale_fill_manual(values = c("#bdbdbd","#717171")) +
+  labs(x="") + theme(legend.position = "none")
+```
+
+
+
+
+
+
+
+
+
+
+
+
 
 
